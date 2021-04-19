@@ -38,7 +38,7 @@ class KDiskFreeSpaceInfoPrivate;
  *
  * \since 4.2
  *
- * @deprecated since 5.81, use KIO::FileSystemFreeSpaceJob or QStorageInfo instead
+ * @deprecated since 5.82, use KIO::FileSystemFreeSpaceJob or QStorageInfo instead
  */
 class KIOCORE_EXPORT KDiskFreeSpaceInfo
 {
