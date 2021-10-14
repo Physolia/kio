@@ -49,6 +49,7 @@ target_sources(KF5KIOCore PRIVATE
   kremoteencoding.cpp
   sessiondata.cpp
   slavebase.cpp
+  workerbase.cpp
   dataslave.cpp
   dataprotocol.cpp
   desktopexecparser.cpp

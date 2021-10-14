@@ -1,7 +1,7 @@
 /*
     This file is part of the KDE libraries
     SPDX-FileCopyrightText: 2000-2006 David Faure <faure@kde.org>
-    SPDX-FileCopyrightText: 2019 Harald Sitter <sitter@kde.org>
+    SPDX-FileCopyrightText: 2019-2021 Harald Sitter <sitter@kde.org>
 
     SPDX-License-Identifier: LGPL-2.0-or-later
 */
@@ -172,8 +172,8 @@ extern "C" Q_DECL_EXPORT int kdemain(int argc, char **argv)
         exit(-1);
     }
 
-    Ftp slave(argv[2], argv[3]);
-    slave.dispatchLoop();
+    Ftp worker(argv[2], argv[3]);
+    worker.dispatchLoop();
 
     qCDebug(KIO_FTP) << "Done";
     return 0;
@@ -363,7 +363,6 @@ Result FtpInternal::ftpOpenConnection(LoginMode loginMode)
     }
 
     m_bTextMode = q->configValue(QStringLiteral("textmode"), false);
-    q->connected();
 
     // Redirected due to credential change...
     if (userNameChanged && m_bLoggedOn) {
@@ -570,7 +569,7 @@ Result FtpInternal::ftpLogin(bool *userChanged)
             if (disablePassDlg) {
                 return Result::fail(ERR_USER_CANCELED, m_host);
             }
-            const int errorCode = q->openPasswordDialogV2(info, errorMsg);
+            const int errorCode = q->openPasswordDialog(info, errorMsg);
             if (errorCode) {
                 return Result::fail(errorCode);
             } else {
@@ -2514,7 +2513,7 @@ ConnectionResult FtpInternal::synchronousConnectToHost(const QString &host, quin
             info.commentLabel = i18n("Proxy:");
             info.comment = i18n("<b>%1</b>", proxy.hostName());
 
-            const int errorCode = q->openPasswordDialogV2(info, i18n("Proxy Authentication Failed."));
+            const int errorCode = q->openPasswordDialog(info, i18n("Proxy Authentication Failed."));
             if (errorCode != KJob::NoError) {
                 qCDebug(KIO_FTP) << "user canceled proxy authentication, or communication error." << errorCode;
                 return ConnectionResult{socket, Result::fail(errorCode, proxyUrl.toString())};
@@ -2547,7 +2546,7 @@ ConnectionResult FtpInternal::synchronousConnectToHost(const QString &host, quin
 //===============================================================================
 
 Ftp::Ftp(const QByteArray &pool, const QByteArray &app)
-    : SlaveBase(QByteArrayLiteral("ftp"), pool, app)
+    : WorkerBase(QByteArrayLiteral("ftp"), pool, app)
     , d(new FtpInternal(this))
 {
 }
@@ -2559,14 +2558,9 @@ void Ftp::setHost(const QString &host, quint16 port, const QString &user, const 
     d->setHost(host, port, user, pass);
 }
 
-void Ftp::openConnection()
+KIO::WorkerResult Ftp::openConnection()
 {
-    const auto result = d->openConnection();
-    if (!result.success) {
-        error(result.error, result.errorString);
-        return;
-    }
-    opened();
+    return d->openConnection();
 }
 
 void Ftp::closeConnection()
@@ -2574,44 +2568,44 @@ void Ftp::closeConnection()
     d->closeConnection();
 }
 
-void Ftp::stat(const QUrl &url)
+KIO::WorkerResult Ftp::stat(const QUrl &url)
 {
-    finalize(d->stat(url));
+    return d->stat(url);
 }
 
-void Ftp::listDir(const QUrl &url)
+KIO::WorkerResult Ftp::listDir(const QUrl &url)
 {
-    finalize(d->listDir(url));
+    return d->listDir(url);
 }
 
-void Ftp::mkdir(const QUrl &url, int permissions)
+KIO::WorkerResult Ftp::mkdir(const QUrl &url, int permissions)
 {
-    finalize(d->mkdir(url, permissions));
+    return d->mkdir(url, permissions);
 }
 
-void Ftp::rename(const QUrl &src, const QUrl &dst, JobFlags flags)
+KIO::WorkerResult Ftp::rename(const QUrl &src, const QUrl &dst, JobFlags flags)
 {
-    finalize(d->rename(src, dst, flags));
+    return d->rename(src, dst, flags);
 }
 
-void Ftp::del(const QUrl &url, bool isfile)
+KIO::WorkerResult Ftp::del(const QUrl &url, bool isfile)
 {
-    finalize(d->del(url, isfile));
+    return d->del(url, isfile);
 }
 
-void Ftp::chmod(const QUrl &url, int permissions)
+KIO::WorkerResult Ftp::chmod(const QUrl &url, int permissions)
 {
-    finalize(d->chmod(url, permissions));
+    return d->chmod(url, permissions);
 }
 
-void Ftp::get(const QUrl &url)
+KIO::WorkerResult Ftp::get(const QUrl &url)
 {
-    finalize(d->get(url));
+    return d->get(url);
 }
 
-void Ftp::put(const QUrl &url, int permissions, JobFlags flags)
+KIO::WorkerResult Ftp::put(const QUrl &url, int permissions, JobFlags flags)
 {
-    finalize(d->put(url, permissions, flags));
+    return d->put(url, permissions, flags);
 }
 
 void Ftp::slave_status()
@@ -2619,18 +2613,9 @@ void Ftp::slave_status()
     d->slave_status();
 }
 
-void Ftp::copy(const QUrl &src, const QUrl &dest, int permissions, JobFlags flags)
+KIO::WorkerResult Ftp::copy(const QUrl &src, const QUrl &dest, int permissions, JobFlags flags)
 {
-    finalize(d->copy(src, dest, permissions, flags));
-}
-
-void Ftp::finalize(const Result &result)
-{
-    if (!result.success) {
-        error(result.error, result.errorString);
-        return;
-    }
-    finished();
+    return d->copy(src, dest, permissions, flags);
 }
 
 QDebug operator<<(QDebug dbg, const Result &r)
