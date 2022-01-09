@@ -252,6 +252,8 @@ QVariant KFilePlacesItem::bookmarkData(int role) const
         return m_text;
     case Qt::DecorationRole:
         return QIcon::fromTheme(iconNameForBookmark(b));
+    case Qt::ToolTipRole:
+        return b.url().toDisplayString(QUrl::PreferLocalFile);
     case Qt::BackgroundRole:
         if (isHidden()) {
             return QColor(Qt::lightGray);
@@ -282,6 +284,12 @@ QVariant KFilePlacesItem::deviceData(int role) const
         case Qt::DecorationRole:
             // qDebug() << "adding emblems" << m_emblems << "to device icon" << m_deviceIconName;
             return KIconUtils::addOverlays(m_deviceIconName, m_emblems);
+        case Qt::ToolTipRole:
+            if (m_access) {
+                return m_access->filePath();
+            } else {
+                return QVariant();
+            }
         case KFilePlacesModel::UrlRole:
             if (m_access) {
                 const QString path = m_access->filePath();
