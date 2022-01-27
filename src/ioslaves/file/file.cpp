@@ -14,6 +14,7 @@
 
 #include <QStorageInfo>
 
+#include "authdaemoninterface.h"
 #include "kioglobal_p.h"
 
 #ifdef Q_OS_UNIX
@@ -52,6 +53,17 @@
 #include <kdirnotify.h>
 
 Q_LOGGING_CATEGORY(KIO_FILE, "kf.kio.slaves.file")
+
+#ifdef HAVE_AUTH_HELPER
+inline int awaitErrnoReturn(QDBusPendingReply<uint> pending)
+{
+    pending.waitForFinished();
+    if (pending.isError()) {
+        return EPERM;
+    }
+    return pending.value();
+}
+#endif
 
 // Pseudo plugin class to embed meta data
 class KIOPluginForMetaData : public QObject
@@ -131,7 +143,17 @@ static QFile::Permissions modeToQFilePermissions(int mode)
 FileProtocol::FileProtocol(const QByteArray &pool, const QByteArray &app)
     : SlaveBase(QByteArrayLiteral("file"), pool, app)
     , mFile(nullptr)
+    #ifdef HAVE_AUTH_HELPER
+    , mRootIFace(new OrgKdeKioFilemanagementInterface(
+        QStringLiteral("org.kde.kio.filemanagement"),
+        QStringLiteral("/"),
+        QDBusConnection::systemBus(),
+        this))
+    #endif
 {
+#ifdef HAVE_AUTH_HELPER
+    mRootIFace->setTimeout(-1);
+#endif
     testMode = !qEnvironmentVariableIsEmpty("KIOSLAVE_FILE_ENABLE_TESTMODE");
 }
 
@@ -153,27 +175,30 @@ void FileProtocol::chmod(const QUrl &url, int permissions)
         (setACL(_path.data(), permissions, false) == -1) ||
         /* if not a directory, cannot set default ACLs */
         (setACL(_path.data(), permissions, true) == -1 && errno != ENOTDIR)) {
-        if (auto err = execWithElevatedPrivilege(CHMOD, {_path, permissions}, errno)) {
-            if (!err.wasCanceled()) {
-                switch (err) {
-                case EPERM:
-                case EACCES:
-                    error(KIO::ERR_ACCESS_DENIED, path);
-                    break;
+
+        #ifdef HAVE_AUTH_HELPER
+        if (auto err = awaitErrnoReturn(mRootIFace->ChangeMode(path, permissions))) {
+            switch (err) {
+            case EPERM:
+            case EACCES:
+                error(KIO::ERR_ACCESS_DENIED, path);
+                break;
 #if defined(ENOTSUP)
-                case ENOTSUP: // from setACL since chmod can't return ENOTSUP
-                    error(KIO::ERR_UNSUPPORTED_ACTION, i18n("Setting ACL for %1", path));
-                    break;
+            case ENOTSUP: // from setACL since chmod can't return ENOTSUP
+                error(KIO::ERR_UNSUPPORTED_ACTION, i18n("Setting ACL for %1", path));
+                break;
 #endif
-                case ENOSPC:
-                    error(KIO::ERR_DISK_FULL, path);
-                    break;
-                default:
-                    error(KIO::ERR_CANNOT_CHMOD, path);
-                }
-                return;
+            case ENOSPC:
+                error(KIO::ERR_DISK_FULL, path);
+                break;
+            default:
+                error(KIO::ERR_CANNOT_CHMOD, path);
             }
+            return;
         }
+        #else
+        error(KIO::ERR_CANNOT_CHMOD, path);
+        #endif
     }
 
     finished();
@@ -188,12 +213,14 @@ void FileProtocol::setModificationTime(const QUrl &url, const QDateTime &mtime)
         utbuf.actime = statbuf.st_atime; // access time, unchanged
         utbuf.modtime = mtime.toSecsSinceEpoch(); // modification time
         if (::utime(QFile::encodeName(path).constData(), &utbuf) != 0) {
-            if (auto err = execWithElevatedPrivilege(UTIME, {path, qint64(utbuf.actime), qint64(utbuf.modtime)}, errno)) {
-                if (!err.wasCanceled()) {
-                    // TODO: errno could be EACCES, EPERM, EROFS
-                    error(KIO::ERR_CANNOT_SETTIME, path);
-                }
+            #ifdef HAVE_AUTH_HELPER
+            if (auto err = awaitErrnoReturn(mRootIFace->UpdateTime(path, utbuf.actime, utbuf.modtime))) {
+                // TODO: errno could be EACCES, EPERM, EROFS
+                error(KIO::ERR_CANNOT_SETTIME, path);
             }
+            #else
+            error(KIO::ERR_CANNOT_SETTIME, path);
+            #endif
         } else {
             finished();
         }
@@ -211,7 +238,9 @@ void FileProtocol::mkdir(const QUrl &url, int permissions)
     // Remove existing file or symlink, if requested (#151851)
     if (metaData(QStringLiteral("overwrite")) == QLatin1String("true")) {
         if (!QFile::remove(path)) {
-            execWithElevatedPrivilege(DEL, {path}, errno);
+            #ifdef HAVE_AUTH_HELPER
+            awaitErrnoReturn(mRootIFace->Delete(path));
+            #endif
         }
     }
 
@@ -219,11 +248,12 @@ void FileProtocol::mkdir(const QUrl &url, int permissions)
     if (QT_LSTAT(QFile::encodeName(path).constData(), &buff) == -1) {
         bool dirCreated = QDir().mkdir(path);
         if (!dirCreated) {
-            if (auto err = execWithElevatedPrivilege(MKDIR, {path}, errno)) {
-                if (!err.wasCanceled()) {
-                    // TODO: add access denied & disk full (or another reasons) handling (into Qt, possibly)
-                    error(KIO::ERR_CANNOT_MKDIR, path);
-                }
+            #ifdef HAVE_AUTH_HELPER
+            if (auto err = awaitErrnoReturn(mRootIFace->MakeDirectory(path, permissions))) {
+            #else
+            if (true) {
+            #endif
+                error(KIO::ERR_CANNOT_MKDIR, path);
                 return;
             }
             dirCreated = true;
@@ -618,8 +648,9 @@ void FileProtocol::put(const QUrl &url, int _mode, KIO::JobFlags _flags)
                     } else {
 #ifndef Q_OS_WIN
                         if ((_flags & KIO::Resume)) {
-                            execWithElevatedPrivilege(CHOWN, {dest, getuid(), getgid()}, errno);
-                            QFile::setPermissions(dest, modeToQFilePermissions(filemode));
+                            if (!QFile::setPermissions(dest, modeToQFilePermissions(filemode))) {
+                                awaitErrnoReturn(mRootIFace->ChangeOwner(dest, getuid(), getgid()));
+                            }
                         }
 #endif
                     }
@@ -679,16 +710,20 @@ void FileProtocol::put(const QUrl &url, int _mode, KIO::JobFlags _flags)
         // so we must remove it manually first
         if (_flags & KIO::Overwrite) {
             if (!QFile::remove(dest_orig)) {
-                execWithElevatedPrivilege(DEL, {dest_orig}, errno);
+                #ifdef HAVE_AUTH_HELPER
+                awaitErrnoReturn(mRootIFace->Delete(dest_orig));
+                #endif
             }
         }
 
         if (!QFile::rename(dest, dest_orig)) {
-            if (auto err = execWithElevatedPrivilege(RENAME, {dest, dest_orig}, errno)) {
-                if (!err.wasCanceled()) {
-                    qCWarning(KIO_FILE) << " Couldn't rename " << dest << " to " << dest_orig;
-                    error(KIO::ERR_CANNOT_RENAME_PARTIAL, dest_orig);
-                }
+            #ifdef HAVE_AUTH_HELPER
+            if (awaitErrnoReturn(mRootIFace->Rename(dest, dest_orig))) {
+            #else
+            if (true) {
+            #endif
+                qCWarning(KIO_FILE) << " Couldn't rename " << dest << " to " << dest_orig;
+                error(KIO::ERR_CANNOT_RENAME_PARTIAL, dest_orig);
                 return;
             }
         }
@@ -701,7 +736,11 @@ void FileProtocol::put(const QUrl &url, int _mode, KIO::JobFlags _flags)
             // couldn't chmod. Eat the error if the filesystem apparently doesn't support it.
             KMountPoint::Ptr mp = KMountPoint::currentMountPoints().findByPath(dest_orig);
             if (mp && mp->testFileSystemFlag(KMountPoint::SupportsChmod)) {
-                if (tryChangeFileAttr(CHMOD, {dest_orig, _mode}, errno)) {
+                #ifdef HAVE_AUTH_HELPER
+                if (awaitErrnoReturn(mRootIFace->ChangeMode(dest_orig, _mode))) {
+                #else
+                if (true) {
+                #endif
                     warning(i18n("Could not change permissions for\n%1", dest_orig));
                 }
             }
@@ -945,10 +984,12 @@ bool FileProtocol::deleteRecursive(const QString &path)
         } else {
             // qDebug() << "QFile::remove" << itemPath;
             if (!QFile::remove(itemPath)) {
-                if (auto err = execWithElevatedPrivilege(DEL, {itemPath}, errno)) {
-                    if (!err.wasCanceled()) {
-                        error(KIO::ERR_CANNOT_DELETE, itemPath);
-                    }
+                #ifdef HAVE_AUTH_HELPER
+                if (awaitErrnoReturn(mRootIFace->Delete(itemPath))) {
+                #else
+                if (true) {
+                #endif
+                    error(KIO::ERR_CANNOT_DELETE, itemPath);
                     return false;
                 }
             }
@@ -958,10 +999,12 @@ bool FileProtocol::deleteRecursive(const QString &path)
     for (const QString &itemPath : std::as_const(dirsToDelete)) {
         // qDebug() << "QDir::rmdir" << itemPath;
         if (!dir.rmdir(itemPath)) {
-            if (auto err = execWithElevatedPrivilege(RMDIR, {itemPath}, errno)) {
-                if (!err.wasCanceled()) {
-                    error(KIO::ERR_CANNOT_DELETE, itemPath);
-                }
+            #ifdef HAVE_AUTH_HELPER
+            if (awaitErrnoReturn(mRootIFace->RemoveDir(itemPath))) {
+            #else
+            if (true) {
+            #endif
+                error(KIO::ERR_CANNOT_DELETE, itemPath);
                 return false;
             }
         }
