@@ -32,6 +32,7 @@
 #include <KConfigGroup>
 #include <KCrash>
 #include <KLocalizedString>
+#include <QThread>
 
 #include "kremoteencoding.h"
 
@@ -259,21 +260,23 @@ SlaveBase::SlaveBase(const QByteArray &protocol, const QByteArray &pool_socket, 
     Q_ASSERT(!app_socket.isEmpty());
     d->poolSocket = QFile::decodeName(pool_socket);
 
-    KCrash::initialize();
+    if (QThread::currentThread() == qApp->thread()) {
+        KCrash::initialize();
 
 #ifdef Q_OS_UNIX
-    struct sigaction act;
-    act.sa_handler = sigpipe_handler;
-    sigemptyset(&act.sa_mask);
-    act.sa_flags = 0;
-    sigaction(SIGPIPE, &act, nullptr);
+        struct sigaction act;
+        act.sa_handler = sigpipe_handler;
+        sigemptyset(&act.sa_mask);
+        act.sa_flags = 0;
+        sigaction(SIGPIPE, &act, nullptr);
 
-    ::signal(SIGINT, &genericsig_handler);
-    ::signal(SIGQUIT, &genericsig_handler);
-    ::signal(SIGTERM, &genericsig_handler);
+        ::signal(SIGINT, &genericsig_handler);
+        ::signal(SIGQUIT, &genericsig_handler);
+        ::signal(SIGTERM, &genericsig_handler);
 
-    globalSlave = this;
+        globalSlave = this;
 #endif
+    }
 
     d->isConnectedToApp = true;
 
@@ -1530,14 +1533,20 @@ void SlaveBase::setKillFlag()
 
 void SlaveBase::send(int cmd, const QByteArray &arr)
 {
-    slaveWriteError = false;
-    if (!d->appConnection.send(cmd, arr))
-    // Note that slaveWriteError can also be set by sigpipe_handler
-    {
-        slaveWriteError = true;
-    }
-    if (slaveWriteError) {
-        exit();
+    if (d->runInThread) {
+        if (!d->appConnection.send(cmd, arr)) {
+            exit();
+        }
+    } else {
+        slaveWriteError = false;
+        if (!d->appConnection.send(cmd, arr))
+        // Note that slaveWriteError can also be set by sigpipe_handler
+        {
+            slaveWriteError = true;
+        }
+        if (slaveWriteError) {
+            exit();
+        }
     }
 }
 
