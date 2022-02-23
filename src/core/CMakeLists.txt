@@ -93,6 +93,7 @@ target_sources(KF5KIOCore PRIVATE
 
   kioglobal_p.cpp
   batchrenamejob.cpp
+  kfilefilter.cpp
 )
 
 if (NOT ANDROID)
@@ -307,6 +308,7 @@ ecm_generate_headers(KIOCore_CamelCase_HEADERS
   DesktopExecParser
   FileSystemFreeSpaceJob
   BatchRenameJob
+  KFileFilter
 
   PREFIX KIO
   REQUIRED_HEADERS KIO_namespaced_HEADERS
