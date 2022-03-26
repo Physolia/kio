@@ -103,6 +103,7 @@ private:
     QString m_deviceIconName;
     QStringList m_emblems;
     QString m_groupName;
+    mutable QString m_deviceDisplayName;
 };
 
 #endif
