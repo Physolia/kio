@@ -147,17 +147,6 @@ public:
     QUrl getCompleteUrl(const QString &) const;
 
     /**
-     * Sets the dummy entry on the history combo box. If the dummy entry
-     * already exists, it is overwritten with this information.
-     */
-    void setDummyHistoryEntry(const QString &text, const QIcon &icon = QIcon(), bool usePreviousPixmapIfNull = true);
-
-    /**
-     * Removes the dummy entry of the history combo box.
-     */
-    void removeDummyHistoryEntry();
-
-    /**
      * Asks for overwrite confirmation using a KMessageBox and returns
      * true if the user accepts.
      *
@@ -175,7 +164,6 @@ public:
     void fileHighlighted(const KFileItem &);
     void fileSelected(const KFileItem &);
     void slotLoadingFinished();
-    void fileCompletion(const QString &);
     void togglePlacesPanel(bool show, QObject *sender = nullptr);
     void toggleBookmarks(bool);
     void slotAutoSelectExtClicked();
@@ -267,8 +255,6 @@ public:
 
     bool m_hasDefaultFilter = false; // necessary for the m_operationMode
     bool m_inAccept = false; // true between beginning and end of accept()
-    bool m_dummyAdded = false; // if the dummy item has been added. This prevents the combo from having a
-    // blank item added when loaded
     bool m_confirmOverwrite = false;
     bool m_differentHierarchyLevelItemsEntered = false;
 
@@ -575,9 +561,6 @@ KFileWidget::KFileWidget(const QUrl &_startDir, QWidget *parent)
     KUrlCompletion *fileCompletionObj = new KUrlCompletion(KUrlCompletion::FileCompletion);
     d->m_locationEdit->setCompletionObject(fileCompletionObj);
     d->m_locationEdit->setAutoDeleteCompletionObject(true);
-    connect(fileCompletionObj, &KUrlCompletion::match, this, [this](const QString &match) {
-        d->fileCompletion(match);
-    });
 
     connect(d->m_locationEdit, qOverload<const QString &>(&KUrlComboBox::returnPressed), this, [this](const QString &text) {
         d->locationAccepted(text);
@@ -1235,68 +1218,6 @@ void KFileWidgetPrivate::multiSelectionChanged()
     setLocationText(list.urlList());
 }
 
-void KFileWidgetPrivate::setDummyHistoryEntry(const QString &text, const QIcon &icon, bool usePreviousPixmapIfNull)
-{
-    // Block m_locationEdit signals as setCurrentItem() will cause textChanged() to get
-    // emitted, so slotLocationChanged() will be called. Make sure we don't clear the
-    // KDirOperator's view-selection in there
-    const QSignalBlocker blocker(m_locationEdit);
-
-    bool dummyExists = m_dummyAdded;
-
-    int cursorPosition = m_locationEdit->lineEdit()->cursorPosition();
-
-    if (m_dummyAdded) {
-        if (!icon.isNull()) {
-            m_locationEdit->setItemIcon(0, icon);
-            m_locationEdit->setItemText(0, text);
-        } else {
-            if (!usePreviousPixmapIfNull) {
-                m_locationEdit->setItemIcon(0, QPixmap());
-            }
-            m_locationEdit->setItemText(0, text);
-        }
-    } else {
-        if (!text.isEmpty()) {
-            if (!icon.isNull()) {
-                m_locationEdit->insertItem(0, icon, text);
-            } else {
-                if (!usePreviousPixmapIfNull) {
-                    m_locationEdit->insertItem(0, QPixmap(), text);
-                } else {
-                    m_locationEdit->insertItem(0, text);
-                }
-            }
-            m_dummyAdded = true;
-            dummyExists = true;
-        }
-    }
-
-    if (dummyExists && !text.isEmpty()) {
-        m_locationEdit->setCurrentIndex(0);
-    }
-
-    m_locationEdit->lineEdit()->setCursorPosition(cursorPosition);
-}
-
-void KFileWidgetPrivate::removeDummyHistoryEntry()
-{
-    if (!m_dummyAdded) {
-        return;
-    }
-
-    // Block m_locationEdit signals as setCurrentItem() will cause textChanged() to get
-    // emitted, so slotLocationChanged() will be called. Make sure we don't clear the
-    // KDirOperator's view-selection in there
-    const QSignalBlocker blocker(m_locationEdit);
-
-    if (m_locationEdit->count()) {
-        m_locationEdit->removeItem(0);
-    }
-    m_locationEdit->setCurrentIndex(-1);
-    m_dummyAdded = false;
-}
-
 void KFileWidgetPrivate::setLocationText(const QUrl &url)
 {
     if (!url.isEmpty()) {
@@ -1309,10 +1230,9 @@ void KFileWidgetPrivate::setLocationText(const QUrl &url)
             }
         }
 
-        const QIcon mimeTypeIcon = QIcon::fromTheme(KIO::iconNameForUrl(url), QIcon::fromTheme(QStringLiteral("application-octet-stream")));
-        setDummyHistoryEntry(url.fileName(), mimeTypeIcon);
+        m_locationEdit->setEditText(url.fileName());
     } else {
-        removeDummyHistoryEntry();
+        m_locationEdit->clearEditText();
     }
 
     if (m_operationMode == KFileWidget::Saving) {
@@ -1354,13 +1274,11 @@ void KFileWidgetPrivate::setLocationText(const QList<QUrl> &urlList)
             urls += QStringLiteral("\"%1\" ").arg(escapeDoubleQuotes(relativePathOrUrl(currUrl, url)));
         }
         urls.chop(1);
-
-        setDummyHistoryEntry(urls, QIcon(), false);
+        m_locationEdit->setEditText(urls);
     } else if (urlList.count() == 1) {
-        const QIcon mimeTypeIcon = QIcon::fromTheme(KIO::iconNameForUrl(urlList[0]), QIcon::fromTheme(QStringLiteral("application-octet-stream")));
-        setDummyHistoryEntry(escapeDoubleQuotes(relativePathOrUrl(currUrl, urlList[0])), mimeTypeIcon);
+        m_locationEdit->setEditText(escapeDoubleQuotes(relativePathOrUrl(currUrl, urlList[0])));
     } else {
-        removeDummyHistoryEntry();
+        m_locationEdit->clearEditText();
     }
 
     if (m_operationMode == KFileWidget::Saving) {
@@ -1695,19 +1613,6 @@ void KFileWidgetPrivate::slotLoadingFinished()
     m_ops->blockSignals(false);
 }
 
-void KFileWidgetPrivate::fileCompletion(const QString &match)
-{
-    //     qDebug();
-
-    if (match.isEmpty() || m_locationEdit->currentText().contains(QLatin1Char('"'))) {
-        return;
-    }
-
-    const QUrl url = urlFromString(match);
-    const QIcon mimeTypeIcon = QIcon::fromTheme(KIO::iconNameForUrl(url), QIcon::fromTheme(QStringLiteral("application-octet-stream")));
-    setDummyHistoryEntry(m_locationEdit->currentText(), mimeTypeIcon, !m_locationEdit->currentText().isEmpty());
-}
-
 void KFileWidgetPrivate::slotLocationChanged(const QString &text)
 {
     //     qDebug();
@@ -1716,12 +1621,6 @@ void KFileWidgetPrivate::slotLocationChanged(const QString &text)
 
     if (text.isEmpty() && m_ops->view()) {
         m_ops->view()->clearSelection();
-    }
-
-    if (text.isEmpty()) {
-        removeDummyHistoryEntry();
-    } else {
-        setDummyHistoryEntry(text);
     }
 
     if (!m_locationEdit->lineEdit()->text().isEmpty()) {
@@ -2493,7 +2392,12 @@ void KFileWidgetPrivate::updateLocationEditExtension(const QString &lastExtensio
         // add extension
         const QString newText = QStringView(urlStr).left(fileNameOffset) + fileName + m_extension;
         if (newText != locationEditCurrentText()) {
-            m_locationEdit->setItemText(m_locationEdit->currentIndex(), newText);
+            const int idx = m_locationEdit->currentIndex();
+            if (idx == -1) {
+                m_locationEdit->setEditText(newText);
+            } else {
+                m_locationEdit->setItemText(idx, newText);
+            }
             m_locationEdit->lineEdit()->setModified(true);
         }
     }
