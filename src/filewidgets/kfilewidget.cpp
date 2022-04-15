@@ -192,6 +192,8 @@ public:
 
     QString locationEditCurrentText() const;
 
+    void slotDirOpIconSizeChanged(int size);
+
     /**
      * KIO::NetAccess::mostLocalUrl local replacement.
      * This method won't show any progress dialogs for stating, since
@@ -272,12 +274,16 @@ public:
     bool m_confirmOverwrite = false;
     bool m_differentHierarchyLevelItemsEntered = false;
 
-    const std::array<KIconLoader::StdSizes, 6> m_stdIconSizes = {KIconLoader::SizeSmall,
-                                                                 KIconLoader::SizeSmallMedium,
-                                                                 KIconLoader::SizeMedium,
-                                                                 KIconLoader::SizeLarge,
-                                                                 KIconLoader::SizeHuge,
-                                                                 KIconLoader::SizeEnormous};
+    const std::array<KIconLoader::StdSizes, 8> m_stdIconSizes = {
+        KIconLoader::Size16,
+        KIconLoader::Size22,
+        KIconLoader::Size32,
+        KIconLoader::Size48,
+        KIconLoader::Size64,
+        KIconLoader::Size128,
+        KIconLoader::Size256,
+        KIconLoader::Size512,
+    };
 
     QSlider *m_iconSizeSlider = nullptr;
     QAction *m_zoomOutAction = nullptr;
@@ -481,22 +487,22 @@ KFileWidget::KFileWidget(const QUrl &_startDir, QWidget *parent)
     d->m_iconSizeSlider->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
     d->m_iconSizeSlider->setMinimumWidth(40);
     d->m_iconSizeSlider->setOrientation(Qt::Horizontal);
-    d->m_iconSizeSlider->setMinimum(KIconLoader::SizeSmall);
-    d->m_iconSizeSlider->setMaximum(KIconLoader::SizeEnormous);
+    d->m_iconSizeSlider->setRange(0, d->m_stdIconSizes.size() - 1);
+    d->m_iconSizeSlider->setSingleStep(1);
+    d->m_iconSizeSlider->setPageStep(1);
+    d->m_iconSizeSlider->setTickPosition(QSlider::TicksBelow);
     d->m_iconSizeSlider->installEventFilter(this);
 
-    connect(d->m_iconSizeSlider, &QAbstractSlider::valueChanged, this, [this](int value) {
-        d->slotIconSizeChanged(value);
+    connect(d->m_iconSizeSlider, &QAbstractSlider::valueChanged, this, [this](int step) {
+        d->slotIconSizeChanged(d->m_stdIconSizes[step]);
     });
 
-    connect(d->m_iconSizeSlider, &QAbstractSlider::sliderMoved, this, [this](int value) {
-        d->slotIconSizeSliderMoved(value);
+    connect(d->m_iconSizeSlider, &QAbstractSlider::sliderMoved, this, [this](int step) {
+        d->slotIconSizeSliderMoved(d->m_stdIconSizes[step]);
     });
 
-    connect(d->m_ops, &KDirOperator::currentIconSizeChanged, this, [this](int value) {
-        d->m_iconSizeSlider->setValue(value);
-        d->m_zoomOutAction->setDisabled(value <= d->m_iconSizeSlider->minimum());
-        d->m_zoomInAction->setDisabled(value >= d->m_iconSizeSlider->maximum());
+    connect(d->m_ops, &KDirOperator::currentIconSizeChanged, this, [this](int iconSize) {
+        d->slotDirOpIconSizeChanged(iconSize);
     });
 
     d->m_zoomOutAction = new QAction(QIcon::fromTheme(QStringLiteral("file-zoom-out")), i18n("Zoom out"), this);
@@ -619,7 +625,8 @@ KFileWidget::KFileWidget(const QUrl &_startDir, QWidget *parent)
     readConfig(group);
 
     coll->action(QStringLiteral("inline preview"))->setChecked(d->m_ops->isInlinePreviewShown());
-    d->m_iconSizeSlider->setValue(d->m_ops->iconSize());
+
+    d->slotDirOpIconSizeChanged(d->m_ops->iconSize());
 
     KFilePreviewGenerator *pg = d->m_ops->previewGenerator();
     if (pg) {
@@ -2173,66 +2180,52 @@ void KFileWidgetPrivate::activateUrlNavigator()
     }
 }
 
+void KFileWidgetPrivate::slotDirOpIconSizeChanged(int size)
+{
+    auto beginIt = m_stdIconSizes.cbegin();
+    auto endIt = m_stdIconSizes.cend();
+    auto it = std::lower_bound(beginIt, endIt, size);
+    const int sliderStep = it != endIt ? it - beginIt : 0;
+    m_iconSizeSlider->setValue(sliderStep);
+    m_zoomOutAction->setDisabled(it == beginIt);
+    m_zoomInAction->setDisabled(it == (endIt - 1));
+}
+
 void KFileWidgetPrivate::zoomOutIconsSize()
 {
-    const int currValue = m_ops->iconSize();
+    int step = m_iconSizeSlider->value();
+    if (step == 0) {
+        return;
+    }
 
-    // Jump to the nearest standard size
-    auto r_itEnd = m_stdIconSizes.crend();
-    auto it = std::find_if(m_stdIconSizes.crbegin(), r_itEnd, [currValue](KIconLoader::StdSizes size) {
-        return size < currValue;
-    });
-
-    Q_ASSERT(it != r_itEnd);
-
-    const int nearestSize = *it;
-
-    m_iconSizeSlider->setValue(nearestSize);
-    slotIconSizeSliderMoved(nearestSize);
+    --step;
+    m_iconSizeSlider->setValue(step);
+    slotIconSizeSliderMoved(m_stdIconSizes[step]);
 }
 
 void KFileWidgetPrivate::zoomInIconsSize()
 {
-    const int currValue = m_ops->iconSize();
+    int step = m_iconSizeSlider->value();
+    if (step == static_cast<int>(m_stdIconSizes.size() - 1)) {
+        return;
+    }
 
-    // Jump to the nearest standard size
-    auto itEnd = m_stdIconSizes.cend();
-    auto it = std::find_if(m_stdIconSizes.cbegin(), itEnd, [currValue](KIconLoader::StdSizes size) {
-        return size > currValue;
-    });
-
-    Q_ASSERT(it != itEnd);
-
-    const int nearestSize = *it;
-
-    m_iconSizeSlider->setValue(nearestSize);
-    slotIconSizeSliderMoved(nearestSize);
+    ++step;
+    m_iconSizeSlider->setValue(step);
+    slotIconSizeSliderMoved(m_stdIconSizes[step]);
 }
 
 void KFileWidgetPrivate::slotIconSizeChanged(int _value)
 {
     m_ops->setIconSize(_value);
-
-    switch (_value) {
-    case KIconLoader::SizeSmall:
-    case KIconLoader::SizeSmallMedium:
-    case KIconLoader::SizeMedium:
-    case KIconLoader::SizeLarge:
-    case KIconLoader::SizeHuge:
-    case KIconLoader::SizeEnormous:
-        m_iconSizeSlider->setToolTip(i18n("Icon size: %1 pixels (standard size)", _value));
-        break;
-    default:
-        m_iconSizeSlider->setToolTip(i18n("Icon size: %1 pixels", _value));
-        break;
-    }
+    m_iconSizeSlider->setToolTip(i18n("Icon size: %1 pixels", _value));
 }
 
-void KFileWidgetPrivate::slotIconSizeSliderMoved(int _value)
+void KFileWidgetPrivate::slotIconSizeSliderMoved(int size)
 {
     // Force this to be called in case this slot is called first on the
     // slider move.
-    slotIconSizeChanged(_value);
+    slotIconSizeChanged(size);
 
     QPoint global(m_iconSizeSlider->rect().topLeft());
     global.ry() += m_iconSizeSlider->height() / 2;
